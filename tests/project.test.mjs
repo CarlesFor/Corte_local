@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {newProject,newClip,splitClip,deleteClip,toSrt,parseSrt,toAss,validateProject,segmentCaption} from '../shared/project.mjs';
+import {placeMedia} from '../shared/placement.mjs';
+function fixture(){const p=newProject(),m={id:'source',duration:10,name:'vídeo.mp4',path:'vídeo.mp4',type:'video'};p.media.push(m);p.clips.push({...newClip(m,p.tracks[0].id,2),in:1,duration:4,speed:2});return p;}
+test('overlays create independent tracks at the cursor and preserve the base audio and editing',()=>{
+  const p=fixture(),image={id:'image',duration:5,name:'foto.png',path:'foto.png',type:'image'};p.media.push(image);
+  const base=structuredClone(p.clips[0]),q=placeMedia(p,image.id,{start:3,overlay:true});
+  assert.equal(p.clips.length,1);assert.deepEqual(q.clips[0],base);assert.equal(q.clips[1].start,3);assert.equal(q.clips[1].trackId,q.tracks[0].id);assert.notEqual(q.clips[0].trackId,q.clips[1].trackId);
+  const r=placeMedia(q,'source',{start:3,overlay:true});assert.equal(r.tracks.filter(t=>t.kind==='video').length,3);assert.equal(r.clips[2].trackId,r.tracks[0].id);
+  const next=placeMedia(r,'source');assert.equal(next.clips.at(-1).trackId,base.trackId);assert.equal(next.clips.at(-1).start,6,'ordinary additions continue the base sequence');
+  q.tracks[0].locked=true;assert.throws(()=>placeMedia(q,image.id,{trackId:q.tracks[0].id,start:0}),/desbloqueada/);
+  const audio={...image,id:'audio',type:'audio'};q.media.push(audio);assert.throws(()=>placeMedia(q,audio.id,{overlay:true,start:0}),/vídeo o una imagen/);
+});
+test('split preserves source time with speed changes and leaves the original untouched',()=>{const p=fixture(),q=splitClip(p,p.clips[0].id,3.5);assert.equal(p.clips.length,1);assert.equal(q.clips.length,2);assert.equal(q.clips[0].duration,1.5);assert.equal(q.clips[1].in,4);assert.equal(q.clips[1].duration,2.5);assert.equal(q.clips[1].start,3.5);});
+test('locked tracks cannot be cut or deleted',()=>{const p=fixture();p.tracks[0].locked=true;assert.equal(splitClip(p,p.clips[0].id,4),p);assert.equal(deleteClip(p,p.clips[0].id),p);});
+test('linked audio and video cuts preserve synchronization',()=>{const p=fixture();p.clips[0].linkId='linked';p.clips.push({...p.clips[0],id:'audio',trackId:p.tracks[1].id});const q=splitClip(p,p.clips[0].id,4);assert.equal(q.clips.length,4);const right=q.clips.filter(c=>c.start===4);assert.equal(right.length,2);assert.equal(right[0].in,right[1].in);assert.equal(right[0].linkId,right[1].linkId);assert.notEqual(right[0].linkId,'linked');});
+test('ripple delete closes the gap and shifts later subtitles',()=>{const p=fixture();p.clips.push({...p.clips[0],id:'next',start:6});p.captions=[{id:'cue',start:6,end:8,text:'Hola'}];const q=deleteClip(p,p.clips[0].id,true);assert.equal(q.clips[0].start,2);assert.equal(q.captions[0].start,2);assert.equal(q.captions[0].end,4);});
+test('SRT round trip preserves accented text and millisecond timestamps',()=>{const cues=[{id:'a',start:1.234,end:3.567,text:'¡Hola, qué tal!\nSegunda línea'}];const parsed=parseSrt(toSrt(cues));assert.equal(parsed[0].start,1.234);assert.equal(parsed[0].end,3.567);assert.equal(parsed[0].text,cues[0].text);assert.equal(parseSrt('invalid').length,0);});
+test('ASS supports independent background and outline and escapes override tags',()=>{const p=newProject();p.captionStyle.backgroundOpacity=1;p.captions=[{id:'cue',start:0,end:2,text:'Hola {\\pos(0,0)}\nMundo'}];const ass=toAss(p);assert.match(ass,/S0bg/);assert.match(ass,/Dialogue: 21/);assert.match(ass,/\\\{/);assert.match(ass,/\\N/);});
+test('invalid projects are rejected before rendering',()=>{const p=fixture();assert.equal(validateProject(p),p);p.clips[0].speed=NaN;assert.throws(()=>validateProject(p));p.clips[0].speed=1;p.clips[0].trackId='missing';assert.throws(()=>validateProject(p));});
+test('linked operations also respect a locked audio track',()=>{const p=fixture();p.clips[0].linkId='pair';p.clips.push({...p.clips[0],id:'audio',trackId:p.tracks[1].id});p.tracks[1].locked=true;assert.equal(splitClip(p,p.clips[0].id,4),p);assert.equal(deleteClip(p,p.clips[0].id,true),p);});
+test('automatic phrase segmentation keeps all words, timings, and a two-line limit',()=>{const text='Los subtítulos automáticos funcionan sin conexión a internet. Todos los archivos se quedan en local.';const cues=segmentCaption({id:'cue',start:2,end:8,text},26);assert.ok(cues.every(c=>c.text.split('\n').length<=2));assert.equal(cues[0].start,2);assert.equal(cues.at(-1).end,8);assert.equal(cues.map(c=>c.text).join(' ').replace(/\s+/g,' '),text);});

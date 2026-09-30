@@ -1,0 +1,12 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {Engine,run} from '../electron/engine.mjs';
+import {newProject,newClip,duration} from '../shared/project.mjs';
+const folder=path.resolve('.test-output/long');await fs.mkdir(folder,{recursive:true});const engine=new Engine({dataDir:folder});await engine.init();const source=path.join(folder,'treinta-minutos.mp4');
+console.log('Generating a real 30-minute video fixture…');
+await run(engine.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=0x364a36:s=128x72:r=30:d=1800','-c:v','libx264','-preset','ultrafast','-crf','32','-threads','2',source]);
+console.log('Importing source and creating the playback proxy…');const media=await engine.importMedia(source);assert.ok(Math.abs(media.duration-1800)<0.1);assert.ok(media.thumbnail);
+const p=newProject();p.width=128;p.height=72;p.media=[media];p.clips=[newClip(media,p.tracks[0].id)];assert.equal(duration(p),1800);await fs.writeFile(path.join(folder,'treinta-minutos.corte'),JSON.stringify(p));
+console.log('Exporting an interval from the 30-minute project…');const output=path.join(folder,'intervalo.mp4');await engine.render(p,{height:720,fps:30,start:0,end:2,burnCaptions:false},output);const info=await engine.probe(output);assert.ok(Math.abs(Number(info.format.duration)-2)<0.1);assert.equal(info.streams.find(s=>s.codec_type==='video').height,720);
+console.log('PASS: 30-minute source import, proxy, project timeline, and interval export.');

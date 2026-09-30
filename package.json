@@ -1,0 +1,80 @@
+{
+  "name": "corte-local",
+  "version": "1.0.2",
+  "private": true,
+  "description": "Editor de vídeo y subtítulos, completamente local",
+  "author": "Corte Local",
+  "homepage": "https://github.com/CarlesFor/Corte_local",
+  "repository": { "type": "git", "url": "https://github.com/CarlesFor/Corte_local.git" },
+  "bugs": { "url": "https://github.com/CarlesFor/Corte_local/issues" },
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/assets.mjs && tsc --noEmit && vite build",
+    "start": "electron .",
+    "test": "node --test tests/project.test.mjs tests/engine.test.mjs tests/waveform.test.mjs",
+    "test:ui": "node scripts/ui-test.mjs",
+    "test:packaged": "node scripts/ui-test.mjs --packaged",
+    "test:portable": "node scripts/portable-test.mjs",
+    "test:long": "node scripts/long-test.mjs",
+    "setup:electron": "node node_modules/electron/install.js",
+    "prepare:engines": "node scripts/prepare.mjs",
+    "test:speech": "node scripts/speech-test.mjs",
+    "package": "npm run build && node scripts/prepare.mjs && electron-builder --win --dir",
+    "dist": "npm run build && node scripts/prepare.mjs && electron-builder --win nsis portable zip --x64 --publish never"
+  },
+  "dependencies": { "adm-zip": "0.6.1" },
+  "devDependencies": {
+    "@fontsource/inter": "5.3.0",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "libass-wasm": "4.1.0",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "44.5.0",
+    "electron-builder": "^26.0.0",
+    "node": "22.22.0",
+    "playwright": "^1.58.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0"
+  },
+  "build": {
+    "appId": "es.cortelocal.editor",
+    "productName": "Corte Local",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "shared/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "engines"
+      }
+    ],
+    "win": {
+      "artifactName": "Corte-Local-Windows.${ext}",
+      "target": [
+        "nsis"
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "artifactName": "Corte-Local-Instalador-Windows.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "portable": { "artifactName": "Corte-Local-Windows.exe", "requestExecutionLevel": "user" }
+  }
+}

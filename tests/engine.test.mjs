@@ -1,0 +1,71 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {Engine,run} from '../electron/engine.mjs';
+import {newProject,newClip} from '../shared/project.mjs';
+import {placeMedia} from '../shared/placement.mjs';
+const folder=path.resolve('.test-output/engine');
+test('stacked video and transparent image overlays export in track order while the base audio continues',async()=>{
+  await fs.mkdir(folder,{recursive:true});const engine=new Engine({dataDir:folder});await engine.init();
+  const baseFile=path.join(folder,'layers-base.mp4'),topFile=path.join(folder,'layers-top.mp4'),imageFile=path.join(folder,'layers-image.png'),rawImage=path.join(folder,'layers-image.rgba');
+  await run(engine.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=red:s=320x180:r=25:d=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',baseFile]);
+  await run(engine.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=blue:s=320x180:r=25:d=2','-c:v','libx264','-pix_fmt','yuv420p',topFile]);
+  const pixels=Buffer.alloc(80*80*4);for(let y=8;y<72;y++)for(let x=8;x<72;x++){const i=(y*80+x)*4;pixels[i+1]=255;pixels[i+3]=255;}await fs.writeFile(rawImage,pixels);
+  await run(engine.ffmpeg,['-y','-v','error','-f','rawvideo','-pix_fmt','rgba','-s','80x80','-i',rawImage,'-frames:v','1',imageFile]);
+  const base=await engine.importMedia(baseFile),image=await engine.importMedia(imageFile),top=await engine.importMedia(topFile);
+  let p=newProject();p.width=320;p.height=180;p.media=[base,image,top];p=placeMedia(p,base.id,{start:0});p=placeMedia(p,image.id,{start:0.5,overlay:true});Object.assign(p.clips[1],{duration:2,scale:0.5});p=placeMedia(p,top.id,{start:1,overlay:true});Object.assign(p.clips[2],{duration:1,scale:0.25});
+  const output=path.join(folder,'layers.mp4');await engine.render(p,{height:180,fps:25,start:0,end:4,burnCaptions:false},output);
+  const readFrame=async(file,time)=>{const raw=path.join(folder,'layers-frame.rgb');await run(engine.ffmpeg,['-y','-v','error','-ss',String(time),'-i',file,'-frames:v','1','-pix_fmt','rgb24','-f','rawvideo',raw]);return fs.readFile(raw);};
+  const at=(frame,x,y)=>[...frame.subarray((y*320+x)*3,(y*320+x)*3+3)];
+  const before=at(await readFrame(output,0.2),160,90);assert.ok(before[0]>200&&before[1]<30&&before[2]<30);
+  const imageOnly=await readFrame(output,0.75),green=at(imageOnly,160,90),transparent=at(imageOnly,117,47);
+  assert.ok(green[1]>200&&green[0]<40,'image is above the main video');assert.ok(transparent[0]>200&&transparent[1]<40,'transparent image pixels reveal the video');
+  const stacked=await readFrame(output,1.5),blue=at(stacked,160,90),edge=at(stacked,160,120);
+  assert.ok(blue[2]>200&&blue[0]<40,'the upper video track covers the image');assert.ok(edge[1]>180&&edge[0]<50,'the image remains visible around the smaller video');
+  const after=at(await readFrame(output,3),160,90);assert.ok(after[0]>200&&after[1]<30,'base video continues after overlay ends');
+  const audio=path.join(folder,'layers-audio.pcm');await run(engine.ffmpeg,['-y','-v','error','-i',output,'-vn','-ac','1','-ar','16000','-f','s16le',audio]);const sound=await fs.readFile(audio);let energy=0;for(let i=16000*2;i<16000*4;i+=2)energy+=(sound.readInt16LE(i)/32768)**2;assert.ok(Math.sqrt(energy/16000)>0.03,'voice remains audible while overlays are on screen');
+  [p.tracks[0],p.tracks[1]]=[p.tracks[1],p.tracks[0]];
+  const reversed=path.join(folder,'layers-reordered.mp4');await engine.render(p,{height:180,fps:25,start:1.4,end:1.6,burnCaptions:false},reversed);const reordered=at(await readFrame(reversed,0.04),160,90);assert.ok(reordered[1]>200&&reordered[2]<50,'reordering tracks changes the visible top layer');
+});
+test('real FFmpeg: import, cut, speed, layered title, burn captions, mix, and interval export',async()=>{
+  await fs.mkdir(folder,{recursive:true});const engine=new Engine({dataDir:folder});await engine.init();assert.ok(engine.ffmpeg);assert.ok(engine.ffprobe);
+  await fs.cp('resources/fonts',engine.fontsDir,{recursive:true});
+  const file=path.join(folder,'vídeo con espacios.mp4');
+  await run(engine.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=red:s=320x180:r=30:d=4','-f','lavfi','-i','sine=frequency=440:duration=4','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',file]);
+  const media=await engine.importMedia(file);assert.equal(media.type,'video');assert.equal(media.hasAudio,true);assert.ok(media.waveform.length>=400);assert.equal(media.waveformStep,0.01);assert.ok(Math.max(...media.waveform)>0.05,'voice-range frequencies survive envelope generation');assert.ok(media.thumbnail);
+  const p=newProject();p.width=320;p.height=180;p.media.push(media);const c={...newClip(media,p.tracks[0].id,0),in:0.5,duration:1.5,speed:2,volume:0.25,fadeIn:0.1,fadeOut:0.1};p.clips.push(c);
+  p.clips.push({...newClip(null,p.tracks[2].id,0),duration:1.5,text:'TÍTULO',style:{...p.captionStyle,font:'Inter',size:22,y:0.25}});
+  p.captions=[{id:'cue',start:0.2,end:1.3,text:'Hola, mundo'}];p.captionStyle.size=18;p.captionStyle.backgroundOpacity=1;p.captionStyle.background='#ffffff';p.captionStyle.color='#000000';
+  const output=path.join(folder,'export.mp4');await engine.render(p,{height:180,fps:30,quality:'high',burnCaptions:true,start:0.25,end:1.25},output);
+  const info=await engine.probe(output);assert.ok(Math.abs(Number(info.format.duration)-1)<0.1);const video=info.streams.find(s=>s.codec_type==='video');assert.equal(video.width,320);assert.equal(video.height,180);assert.equal(video.codec_name,'h264');assert.ok(info.streams.some(s=>s.codec_type==='audio'));
+  const raw=path.join(folder,'frame.rgb');await run(engine.ffmpeg,['-y','-v','error','-ss','0.5','-i',output,'-frames:v','1','-pix_fmt','rgb24','-f','rawvideo',raw]);const bytes=await fs.readFile(raw);let nonRed=0,red=0;for(let i=0;i<bytes.length;i+=3){if(bytes[i]>180&&bytes[i+1]<60&&bytes[i+2]<60)red++;else nonRed++;}assert.ok(red>20000,'source picture survives');assert.ok(nonRed>1000,'titles and caption backgrounds are burned in');
+  const voice=path.join(folder,'voice.wav');await engine.render(p,{start:0,end:1.5},voice,{audioOnly:true,tracks:[p.tracks[0].id]});const voiceInfo=await engine.probe(voice);assert.equal(voiceInfo.streams[0].sample_rate,'16000');assert.equal(voiceInfo.streams[0].channels,1);assert.ok(Math.abs(Number(voiceInfo.format.duration)-1.5)<0.1);
+});
+test('portrait 1080p uses a 1080 pixel short edge',async()=>{const engine=new Engine({dataDir:folder});await engine.init();const p=newProject();p.width=90;p.height=160;p.captions=[{id:'c',start:0,end:0.1,text:'vertical'}];p.captionStyle.size=8;const output=path.join(folder,'portrait.mp4');await engine.render(p,{height:1080,fps:30,start:0,end:0.1},output);const stream=(await engine.probe(output)).streams.find(s=>s.codec_type==='video');assert.equal(stream.width,1080);assert.equal(stream.height,1920);});
+test('cancelling a child process rejects and releases it',async()=>{const engine=new Engine({dataDir:folder});const controller=new AbortController();const task=run(engine.ffmpeg,['-re','-f','lavfi','-i','anullsrc','-f','null','-'],{signal:controller.signal});setTimeout(()=>controller.abort(),100);await assert.rejects(task,/cancelada/);});
+test('video waveform exposes real silence and stereo sound, reuses cache and skips silent video',async()=>{
+  const engine=new Engine({dataDir:folder});await engine.init();
+  const source=path.join(folder,'sonido-y-silencios.mp4');
+  await run(engine.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=teal:s=320x180:r=25:d=6','-f','lavfi','-i',"aevalsrc=exprs='if(lt(mod(t,2),1),0.4*sin(2*PI*880*t),0)|if(lt(mod(t,2),1),-0.4*sin(2*PI*880*t),0)':s=16000:d=6",'-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',source]);
+  const media=await engine.importMedia(source);
+  assert.equal(media.waveformStep,0.01);assert.ok(media.waveform.length>=590);
+  for(const second of [0,2,4]){
+    const sound=media.waveform.slice((second+0.2)*100,(second+0.8)*100);
+    const silence=media.waveform.slice((second+1.2)*100,(second+1.8)*100);
+    assert.ok(sound.every(peak=>peak>0.3),'opposite stereo phases retain visible sound');
+    assert.ok(silence.every(peak=>peak<0.003),'silent stretches are flat');
+  }
+  assert.deepEqual((await engine.importMedia(source)).waveform,media.waveform,'cached imports preserve the detailed envelope');
+  const noAudio=path.join(folder,'sin-audio.mp4');await run(engine.ffmpeg,['-y','-v','error','-i',source,'-an','-c:v','copy',noAudio]);
+  const silent=await engine.importMedia(noAudio);assert.equal(silent.hasAudio,false);assert.equal(silent.waveform,undefined);
+});
+test('dissolve blends two source pictures and the mixed audio keeps the timeline duration',async()=>{
+  const engine=new Engine({dataDir:folder});await engine.init();const blue=path.join(folder,'blue.mp4');await run(engine.ffmpeg,['-y','-v','error','-f','lavfi','-i','color=c=blue:s=320x180:r=30:d=2','-f','lavfi','-i','sine=frequency=880:duration=2','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac','-shortest',blue]);
+  const red=await engine.importMedia(path.join(folder,'vídeo con espacios.mp4')),second=await engine.importMedia(blue),p=newProject();p.width=320;p.height=180;p.media=[red,second];p.clips=[{...newClip(red,p.tracks[0].id,0),duration:2},{...newClip(second,p.tracks[0].id,1.5),duration:2,transition:'dissolve',transitionDuration:0.5}];
+  const output=path.join(folder,'dissolve.mp4');await engine.render(p,{height:180,fps:30,start:0,end:3.5},output);assert.ok(Math.abs(Number((await engine.probe(output)).format.duration)-3.5)<0.1);
+  const frame=path.join(folder,'blend.rgb');await run(engine.ffmpeg,['-y','-v','error','-ss','1.75','-i',output,'-frames:v','1','-pix_fmt','rgb24','-f','rawvideo',frame]);const bytes=await fs.readFile(frame),center=(90*320+160)*3;assert.ok(bytes[center]>50&&bytes[center+2]>50,'red and blue sources blend during the dissolve');
+  const audio=path.join(folder,'mixed.wav');await engine.render(p,{start:0,end:3.5},audio,{audioOnly:true});assert.ok(Math.abs(Number((await engine.probe(audio)).format.duration)-3.5)<0.1);
+});
+test('missing source fails with a useful message before opening the renderer',async()=>{const engine=new Engine({dataDir:folder});await engine.init();const p=newProject(),m={id:'gone',name:'ausente.mp4',path:path.join(folder,'does-not-exist.mp4'),type:'video',duration:1,hasAudio:false};p.media=[m];p.clips=[newClip(m,p.tracks[0].id)];await assert.rejects(engine.render(p,{height:180,start:0,end:1},path.join(folder,'missing.mp4')),/Archivo ausente/);});
+test('plain video export also works without any title or subtitles',async()=>{const engine=new Engine({dataDir:folder});await engine.init();const m=await engine.importMedia(path.join(folder,'vídeo con espacios.mp4')),p=newProject();p.width=320;p.height=180;p.media=[m];p.clips=[{...newClip(m,p.tracks[0].id),duration:1}];const output=path.join(folder,'plain.mp4');await engine.render(p,{height:180,start:0,end:1,burnCaptions:false},output);assert.ok(Math.abs(Number((await engine.probe(output)).format.duration)-1)<0.1);});

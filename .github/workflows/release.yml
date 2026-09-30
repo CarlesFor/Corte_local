@@ -1,0 +1,39 @@
+name: Publicar una versión de Windows
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.22.0'
+          cache: npm
+      - run: npm ci
+      - run: npm run setup:electron
+      - run: npm run dist
+      - run: npm test
+      - run: npm run test:packaged
+      - run: npm run test:portable
+      - run: node scripts/release-checksums.mjs
+      - name: Publicar las descargas verificadas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) { throw "La versión $tag ya existe. Actualiza la versión antes de publicar." }
+          gh release create $tag release/Corte-Local-Windows.exe release/Corte-Local-Instalador-Windows.exe release/Corte-Local-Windows.zip release/SHA256SUMS.txt --target '${{ github.sha }}' --title "Corte Local $version" --notes-file docs/release-notes.md --draft
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo crear la versión.' }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo publicar la versión.' }
