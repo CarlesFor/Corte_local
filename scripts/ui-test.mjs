@@ -14,7 +14,10 @@ const require=createRequire(import.meta.url),folder=path.resolve(packaged?'.test
 const source=path.resolve('.test-output/engine/vídeo con espacios.mp4'),srt=path.join(folder,'prueba.srt'),saved=path.join(folder,'proyecto.corte'),output=path.join(folder,'resultado.mp4');
 await fs.writeFile(srt,'1\n00:00:00,200 --> 00:00:02,000\n¡Una historia en español!\n\n2\n00:00:02,000 --> 00:00:03,800\nTodo se queda en tu ordenador.\n');
 const env={...process.env,CORTE_TEST:'1',CORTE_DATA_DIR:path.join(folder,'data'),CORTE_TEST_SOURCE:source,CORTE_TEST_SRT:srt,CORTE_TEST_SAVE:saved,CORTE_TEST_OUTPUT:output,CORTE_TEST_FOLDER:folder};delete env.ELECTRON_RUN_AS_NODE;
-const app=await electron.launch({executablePath:packaged?packagedExecutable:require('electron'),args:packaged?[]:['.'],env,timeout:60000});
+// CI runners may have no audio output device. Chromium's fake output keeps
+// the real decoding and playback clock running without requiring speakers.
+const launchArgs=packaged?[]:['.'];if(process.env.CI)launchArgs.unshift('--disable-audio-output');
+const app=await electron.launch({executablePath:packaged?packagedExecutable:require('electron'),args:launchArgs,env,timeout:60000});
 const errors=[],logs=[];let page;
 try {
   page=await app.firstWindow();page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')logs.push(m.text());});
